@@ -6,26 +6,63 @@ interface ICache {
   expired: number;
   data: any;
 }
-// References 
-// https://gist.github.com/ashwin-sureshkumar/4e86617ab3757e075de160748e3ea132
-// https://github.com/vilic/memorize-decorator
-// API caching decorator
-export function Cachize(hashFunction?: (...args: any[]) => any, options = { ttl: 1800000 }): MethodDecorator {
+export interface CachizeOptions {
+  ttl?: number;
+  async?: boolean;
+}
+/**
+ * Implements in-memory caching using decorators
+ * @param fn : function to generate unique hash(key), if not provided uses inline original method's arguments
+ * @param options: { ttl?: number | false;  async?: boolean; }
+ * ttl: time-to-live (DEFAULT: 30min)
+ * async (DEFAULT: true): whether the original method is asynchronous(returns Promise or Observable)
+ *
+ * USAGES:
+ * import cachize from 'cachize-decorator';
+ *
+ * @cachize({
+ *   // Deletes cache after 100 milliseconds.
+ *   ttl: 100,
+ * })
+ * somemethod() {
+ *   return 'abc';
+ * }
+ *
+ * @cachize()
+ * asyncMethod() {
+ *   return this.http.get('/api/userroles');
+ * }
+ *
+ * @cachize()
+ * someMethod() {
+ *   return this.http.get('/api/countries');
+ * }
+ */
+export function cachize<T extends () => void>(fn: T, options?: CachizeOptions | undefined): T;
+export function cachize(options?: CachizeOptions | undefined): MethodDecorator;
+export function cachize(
+  fn?: (() => void) | CachizeOptions,
+  options: CachizeOptions | undefined = { ttl: 1800000, async: true }
+): any {
+  if (typeof fn !== 'function') {
+    options = fn;
+  }
   return (target: object, propertyKey: string, descriptor: TypedPropertyDescriptor<any>) => {
-
     if (descriptor.value != null) {
-      descriptor.value = getNewFunction(descriptor.value, hashFunction, options);
+      descriptor.value = getIntermediateFunction(descriptor.value, fn, options);
     } else if (descriptor.get != null) {
-      descriptor.get = getNewFunction(descriptor.get, hashFunction, options);
+      descriptor.get = getIntermediateFunction(descriptor.get, fn, options);
     } else {
       throw new Error('Only put a Cachize() decorator on a method or get accessor.');
     }
   };
 }
-// clear all
+export default cachize;
+
+// clear all cached data
 export function clearAllCached<T extends { [key: string]: any }>(obj: T) {
   const keys = Object.getOwnPropertyNames(obj);
-  const stub = '__cachified_val_';
+  const stub = '__cachized_val_';
 
   for (const key of keys) {
     if (key !== undefined && key.startsWith(stub)) {
@@ -35,10 +72,10 @@ export function clearAllCached<T extends { [key: string]: any }>(obj: T) {
 }
 
 // Returns if the key exists and has not expired.
-export function cacheGet(obj: any, key: string, hkey: string, options: any) {
-  let cached: ICache;
-  // Get or create map 
-  if (hkey.length > 0 && !obj.hasOwnProperty(key)) {
+function cacheGet(obj: any, key: string, hkey: string) {
+  let cached: ICache | null = null;
+  // Get or create map
+  if (hkey && hkey.length > 0 && !obj.hasOwnProperty(key)) {
     Object.defineProperty(obj, key, {
       configurable: false,
       enumerable: false,
@@ -61,7 +98,7 @@ export function cacheGet(obj: any, key: string, hkey: string, options: any) {
 }
 
 // Sets the cache
-export function cacheSet(obj, key, hkey, data, options) {
+function cacheSet(obj: any, key: string, hkey: string, data: any, options: any) {
   const memoized = obj[key];
   const cval = { data, expired: Date.now() + options.ttl };
   if (hkey) {
@@ -74,12 +111,11 @@ export function cacheSet(obj, key, hkey, data, options) {
       value: cval,
     });
   }
-  resolveInflights(obj, key, hkey, data, options);
-
+  resolveInflights(obj, key, hkey, data);
 }
 
 // handle multiple observables
-export function resolveInflights(obj, key, hkey, data, options) {
+function resolveInflights(obj: any, key: string, hkey: string, data: any) {
   const fkey = `_inflightReq`;
   const fhkey = `${key}_${hkey || ''}`;
   if (!obj.hasOwnProperty(fkey)) {
@@ -108,33 +144,51 @@ export function resolveInflights(obj, key, hkey, data, options) {
   }
 }
 
-let counter = 0;
-function getNewFunction(originalMethod: () => void, hashFunction?: (...args: any[]) => any, options?: any) {
-  const identifier = ++counter;
-
-  // The function returned here gets called instead of originalMethod.
-  return function (...args: any[]) {
-    const propName = `__cachified_val_${identifier}`;
-
-    let hashKey: string;
+// The function returned here gets called instead of originalMethod.
+function getIntermediateFunction(
+  originalMethod: () => void,
+  hashFunction?: (() => void) | CachizeOptions,
+  options: CachizeOptions = {}
+) {
+  return function (this: any, ...args: any[]) {
+    const propName = `__cachized_val_${originalMethod.name}`;
+    let hashKey = '';
     if (args.length > 0) {
-      hashKey = hashFunction ? hashFunction.apply(this, args) : Object.keys(args[0]).map((f) => args[0][f]).join('_');
+      hashKey = hashFunction
+        ? (hashFunction as () => void).apply(this, args)
+        : Object.keys(args[0])
+            .map((f) => args[0][f])
+            .join('_');
       hashKey = hashKey.replace(/\s+/g, '_');
     }
-    const cached = cacheGet(this, propName, hashKey, options);
+    const cached = cacheGet(this, propName, hashKey);
     if (cached) {
       console.log(`%c Getting from cached [${propName}_${hashKey || ''}]`, 'color: green');
-      return new Observable((observer) => {
-        observer.next(cached);
-        observer.complete();
-      });
+      return options.async
+        ? new Observable((observer) => {
+            observer.next(cached);
+            observer.complete();
+          })
+        : cached;
     }
 
-    const inflight = resolveInflights(this, propName, hashKey, undefined, options);
-
-    return inflight ? inflight : originalMethod.apply(this, args).pipe(tap((data) => {
-      cacheSet(this, propName, hashKey, data, options);
-    }));
-
+    if (options.async) {
+      const inflight = resolveInflights(this, propName, hashKey, undefined);
+      return inflight
+        ? inflight
+        : originalMethod.apply(this, args).pipe(
+            tap((data) => {
+              cacheSet(this, propName, hashKey, data, options);
+            })
+          );
+    } else {
+      const newCache = originalMethod.apply(this, args);
+      cacheSet(this, propName, hashKey, newCache, options);
+      return newCache;
+    }
   };
 }
+
+// References
+// https://gist.github.com/ashwin-sureshkumar/4e86617ab3757e075de160748e3ea132
+// https://github.com/vilic/memorize-decorator
