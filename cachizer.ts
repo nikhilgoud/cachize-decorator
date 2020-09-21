@@ -9,43 +9,71 @@ interface ICache {
 export interface CachizeOptions {
   ttl?: number;
   async?: boolean;
+  log?: boolean;
 }
 /**
- * Implements in-memory caching using decorators
- * @param fn : function to generate unique hash(key), if not provided uses inline original method's arguments
- * @param options: { ttl?: number | false;  async?: boolean; }
- * ttl: time-to-live (DEFAULT: 30min)
- * async (DEFAULT: true): whether the original method is asynchronous(returns Promise or Observable)
+ * Implements in-memory caching using decorators using Map<key:string, any>
+ *
+ * Can handle caching on methods with returns observables too(only one!).
+ *
+ * @param {Function} [fn] - function to generate unique hash(key),
+ *  if not provided uses inline original method arguments.
+ * @param {{ ttl?: number | false;  async?: boolean; log: boolean }}
+ * [options={ ttl: 1800000, async: true, log: true }] - config options
+ *
+ *
+ * ttl (DEFAULT: 30min): time-to-live
+ *
+ * async (DEFAULT: true): whether the original method is asynchronous (returns Observable)
+ *
+ * log (DEFAULT: false) print to console for each cache getter
+ *
+ * -
+ * key structure - prefix : __cachized_val_, suffix will be method's name & its argument combinations (uniqueness)
  *
  * USAGES:
  * import cachize from 'cachize-decorator';
  *
- * @cachize({
- *   // Deletes cache after 100 milliseconds.
- *   ttl: 100,
- * })
+ * EXAMPLES:
+ * @example
+ *
+ * @cachize()
+ * someMethod() {
+ *  return this.http.get('/api/userroles');
+ * }
+ *
+ * @example
+ *
+ * @cachize(() => 'somekey')
+ * someMethod() {
+ *   return this.http.get('/api/countries');
+ * }
+ *
+ * @example
+ *
+ * @cachize({ ttl: 100, async: false })
  * somemethod() {
  *   return 'abc';
  * }
  *
- * @cachize()
- * asyncMethod() {
+ * @example
+ *
+ * @cachize((params: any) => `key_${params}`, { log: true })
+ * someMethod() {
  *   return this.http.get('/api/userroles');
  * }
- *
- * @cachize()
- * someMethod() {
- *   return this.http.get('/api/countries');
- * }
  */
-export function cachize<T extends () => void>(fn: T, options?: CachizeOptions | undefined): T;
-export function cachize(options?: CachizeOptions | undefined): MethodDecorator;
+export function cachize(fn?: (_: any) => any, options?: CachizeOptions): MethodDecorator;
+export function cachize(options?: CachizeOptions): MethodDecorator;
 export function cachize(
-  fn?: (() => void) | CachizeOptions,
-  options: CachizeOptions | undefined = { ttl: 1800000, async: true }
-): any {
+  fn: ((_: any) => any) | CachizeOptions | null = {},
+  options: CachizeOptions = {}
+): MethodDecorator {
   if (typeof fn !== 'function') {
-    options = fn;
+    options = Object.assign({}, { ttl: 1800000, async: true, log: true }, fn);
+    fn = null;
+  } else {
+    options = Object.assign({}, { ttl: 1800000, async: true, log: true }, options);
   }
   return (target: object, propertyKey: string, descriptor: TypedPropertyDescriptor<any>) => {
     if (descriptor.value != null) {
@@ -111,11 +139,11 @@ function cacheSet(obj: any, key: string, hkey: string, data: any, options: any) 
       value: cval,
     });
   }
-  resolveInflights(obj, key, hkey, data);
+  resolveInflights(obj, key, hkey, data, options);
 }
 
 // handle multiple observables
-function resolveInflights(obj: any, key: string, hkey: string, data: any) {
+function resolveInflights(obj: any, key: string, hkey: string, data: any, options: CachizeOptions) {
   const fkey = `_inflightReq`;
   const fhkey = `${key}_${hkey || ''}`;
   if (!obj.hasOwnProperty(fkey)) {
@@ -130,7 +158,9 @@ function resolveInflights(obj: any, key: string, hkey: string, data: any) {
     const inFlight = obj[fkey].get(fhkey);
     const observersCount = inFlight.observers.length;
     if (observersCount) {
-      console.log(`%cNotifying ${inFlight.observers.length} flight subscribers for [${fhkey}]`, 'color: blue');
+      if (options.log) {
+        console.log(`%cNotifying ${inFlight.observers.length} flight subscribers for [${fhkey}]`, 'color: blue');
+      }
       inFlight.next(data);
     }
     inFlight.complete();
@@ -146,16 +176,16 @@ function resolveInflights(obj: any, key: string, hkey: string, data: any) {
 
 // The function returned here gets called instead of originalMethod.
 function getIntermediateFunction(
-  originalMethod: () => void,
-  hashFunction?: (() => void) | CachizeOptions,
-  options: CachizeOptions = {}
+  originalMethod: () => any,
+  hashFunction: ((_: any) => any) | CachizeOptions | null,
+  options: CachizeOptions
 ) {
   return function (this: any, ...args: any[]) {
     const propName = `__cachized_val_${originalMethod.name}`;
     let hashKey = '';
     if (args.length > 0) {
       hashKey = hashFunction
-        ? (hashFunction as () => void).apply(this, args)
+        ? (hashFunction as () => any).apply(this, args)
         : Object.keys(args[0])
             .map((f) => args[0][f])
             .join('_');
@@ -163,7 +193,9 @@ function getIntermediateFunction(
     }
     const cached = cacheGet(this, propName, hashKey);
     if (cached) {
-      console.log(`%c Getting from cached [${propName}_${hashKey || ''}]`, 'color: green');
+      if (options.log) {
+        console.log(`%c Getting from cached [${propName}_${hashKey || ''}]`, 'color: green');
+      }
       return options.async
         ? new Observable((observer) => {
             observer.next(cached);
@@ -173,7 +205,7 @@ function getIntermediateFunction(
     }
 
     if (options.async) {
-      const inflight = resolveInflights(this, propName, hashKey, undefined);
+      const inflight = resolveInflights(this, propName, hashKey, undefined, options);
       return inflight
         ? inflight
         : originalMethod.apply(this, args).pipe(
@@ -191,4 +223,3 @@ function getIntermediateFunction(
 
 // References
 // https://gist.github.com/ashwin-sureshkumar/4e86617ab3757e075de160748e3ea132
-// https://github.com/vilic/memorize-decorator
