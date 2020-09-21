@@ -1,22 +1,20 @@
 # cachize-decorator
 
 
- Implements in-memory caching using decorators using `Map<key:string, any>` 
- Can also handle caching on methods with returns observables too(only one!).
- 
+ Implements in-memory caching using decorators using `Map<key:string, any>`. Can also handle caching on methods with returns observables too(only one!).   
+ key structure - prefix : __cachized_val_, suffix will be method's name & its argument combinations (uniqueness)
 
  ### options
  * `ttl` (DEFAULT: 30min): time-to-live
  * `async` (DEFAULT: true): whether the original method is asynchronous (returns Observable)
  * `log` (DEFAULT: false) print to console for each cache getter
- 
- - key structure - prefix : __cachized_val_, suffix will be method's name & its argument combinations (uniqueness)
- 
- USAGES:
+  
+## USAGES:
 
 Decorator method params(both are optional)  
   * `fn` - function to generate unique hash(key), if not provided uses inline original method arguments.  
   * `options` - config options  
+
 
   
    
