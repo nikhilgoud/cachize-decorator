@@ -1,6 +1,7 @@
 import { Observable } from 'rxjs/internal/Observable';
 import { Subject } from 'rxjs/internal/Subject';
 import { tap } from 'rxjs/operators';
+import { Injectable } from '@angular/core';
 
 interface ICache {
   expired: number;
@@ -14,14 +15,22 @@ export interface CachizeOptions {
 
 declare type hashFn = (_?: any) => string;
 
-import { Injectable } from '@angular/core';
-
+/**
+ * Cache Service is an observables based in-memory cache implementation
+ * Keeps track of in-flight observables and sets a default expiry, key for cached values
+ * @export
+ * @class CacheService
+ */
 @Injectable({ providedIn: 'root' })
 export class CacheService {
   public keyIncrementer = 0;
   constructor() {}
 
   /**
+   * Gets the value from cache if the key is provided.
+   * If no value exists in cache, then check if the same call exists
+   * in flight, if so return the subject. If not create a new
+   * Subject inFlightObservable and return the source observable.
    *
    * @param {Observable<any>} fallback
    * @param {Function | string} [keyHash] Unique Key
