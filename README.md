@@ -19,7 +19,8 @@ Implements in-memory caching using decorators & angular service using `Map<key:s
 
 ### As Decorator
 
-Decorator method params(both are optional)
+This can be used in any app(React, Angular or Vue). as it is just a Decorator on any method.
+Decorator method params(both are optional).
 
 - `fn` - function to generate unique hash(key), if not provided uses inline original method arguments.
 - `options` - config options
@@ -60,7 +61,9 @@ someMethod() {
 
 ### As Service
 
-Service has `get` method with arguments
+This can be used in any Angular app, which uses the same implementation.
+
+Service has one `get` method with arguments
 - `fallback`: Observable
 - `keyHash`: Unique Key can be a Function or string
 - `options`: config options(same as decorator)
